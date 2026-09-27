@@ -101,6 +101,7 @@ import {
   issueCommentPresentationSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  normalizeIssueThreadInteractionResolverPolicy,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
@@ -10869,6 +10870,35 @@ export function issueService(db: Db) {
         if (actorAgentId && patch.status === "done") {
           const [review] = await tx.select({ id: toolActionRequests.id }).from(toolActionRequests).where(and(eq(toolActionRequests.companyId, existing.companyId), eq(toolActionRequests.issueId, id), inArray(toolActionRequests.status, ["pending", "approved", "executing"]))).limit(1);
           if (review) throw conflict("This task is waiting for a connection review. Finish unrelated work, then yield in_review without retrying the governed call.", { code: "tool_review_pending", actionRequestId: review.id });
+        }
+        if (
+          !actorUserId &&
+          receiptExisting.status !== "done" &&
+          receiptExisting.status !== "cancelled" &&
+          (issueData.status === "done" || issueData.status === "cancelled")
+        ) {
+          const pending = await tx
+            .select({
+              id: issueThreadInteractions.id,
+              kind: issueThreadInteractions.kind,
+              title: issueThreadInteractions.title,
+              resolverPolicy: issueThreadInteractions.effectiveResolverPolicy,
+            })
+            .from(issueThreadInteractions)
+            .where(and(
+              eq(issueThreadInteractions.companyId, receiptExisting.companyId),
+              eq(issueThreadInteractions.issueId, receiptExisting.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ));
+          const interactions = pending.filter((interaction: typeof pending[number]) =>
+            normalizeIssueThreadInteractionResolverPolicy(interaction.resolverPolicy) === "human_only"
+          );
+          if (interactions.length > 0) {
+            throw conflict(
+              "This task has pending human decisions. Wait for a human decision or withdraw a card you are allowed to withdraw before closing it.",
+              { code: "pending_human_interactions", interactions },
+            );
+          }
         }
 
         const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([

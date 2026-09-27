@@ -191,6 +191,27 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     return { companyId, agentId, issueId, runId, wakeId, commentIds };
   }
 
+  it("keeps a board-only confirmation pending when the assignee agent tries to close", async () => {
+    const seeded = await seedQueue();
+    const client = app(seeded.companyId, "queue-owner", { agentId: seeded.agentId, runId: seeded.runId });
+    const created = await request(client)
+      .post(`/api/issues/${seeded.issueId}/interactions`)
+      .send({ kind: "request_confirmation", resolverPolicy: "board_only", title: "Board decision", payload: { version: 1, prompt: "Approve close?" } });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const interactionId = created.body.id as string;
+
+    const closed = await request(client).patch(`/api/issues/${seeded.issueId}`).send({ status: "done" });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(409);
+    expect(closed.body).toMatchObject({
+      code: "pending_human_interactions",
+      details: { interactions: [{ id: interactionId, kind: "request_confirmation", title: "Board decision", resolverPolicy: "human_only" }] },
+    });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0]?.status)
+      .toBe("pending");
+    expect((await db.select().from(issues).where(eq(issues.id, seeded.issueId)))[0]?.status)
+      .toBe("in_progress");
+  });
+
   it.each(["cancelled", "running"])("rejects a late Done from an interrupted %s task run at the write boundary", async status => {
     const seeded = await seedQueue();
     await db.update(heartbeatRuns).set({ status, resultJson: { executionCancellation: { state: "requested" } } })

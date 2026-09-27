@@ -42,6 +42,7 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
 } from "../services/issues.ts";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.ts";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
@@ -718,6 +719,98 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       interactionKind: "ask_user_questions",
       interactionStatus: "expired",
     });
+  });
+
+  it.each([
+    ["board_only", "done", "agent"],
+    ["human_only", "cancelled", "agent"],
+    ["human_only", "done", "system"],
+  ] as const)("refuses a %s interaction before moving to %s as %s", async (resolverPolicy, status, actor) => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, { id: agentId, name: "ClosingAgent" }));
+    const issue = await svc.create(companyId, {
+      title: "Human decision pending", status: "in_progress", priority: "medium", assigneeAgentId: agentId,
+    });
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId: issue.id, kind: "request_confirmation", title: "Approve close?",
+      status: "pending", requestedResolverPolicy: resolverPolicy,
+      effectiveResolverPolicy: resolverPolicy, createdByAgentId: agentId,
+      payload: { version: 1, prompt: "Approve close?" },
+    }).returning();
+
+    await expect(svc.update(issue.id, { status, ...(actor === "agent" ? { actorAgentId: agentId } : {}) }))
+      .rejects.toMatchObject({
+        status: 409,
+        details: {
+          code: "pending_human_interactions",
+          interactions: [{ id: interaction!.id, kind: "request_confirmation", title: "Approve close?", resolverPolicy }],
+        },
+      });
+    await expect(db.select({ status: issues.status }).from(issues).where(eq(issues.id, issue.id)))
+      .resolves.toEqual([{ status: "in_progress" }]);
+    await expect(db.select({ status: issueThreadInteractions.status }).from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interaction!.id)))
+      .resolves.toEqual([{ status: "pending" }]);
+  });
+
+  it("lets a user close a human-only interaction and expires it", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, { title: "Board close", status: "todo", priority: "medium" });
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId: issue.id, kind: "request_confirmation", status: "pending",
+      requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Approve?" },
+    }).returning();
+
+    await expect(svc.update(issue.id, { status: "done", actorUserId: "local-board" }))
+      .resolves.toMatchObject({ status: "done" });
+    await expect(db.select({ status: issueThreadInteractions.status, result: issueThreadInteractions.result })
+      .from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction!.id)))
+      .resolves.toEqual([{ status: "expired", result: expect.objectContaining({ outcome: "issue_closed" }) }]);
+  });
+
+  it.each(["anyone", "not_creator"] as const)("lets an agent close with a pending %s interaction", async (resolverPolicy) => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, { id: agentId, name: "ClosingAgent" }));
+    const issue = await svc.create(companyId, {
+      title: "Agent close", status: "todo", priority: "medium", assigneeAgentId: agentId,
+    });
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId: issue.id, kind: "request_confirmation", status: "pending",
+      requestedResolverPolicy: resolverPolicy, effectiveResolverPolicy: resolverPolicy,
+      payload: { version: 1, prompt: "Approve?" },
+    }).returning();
+
+    await expect(svc.update(issue.id, { status: "done", actorAgentId: agentId }))
+      .resolves.toMatchObject({ status: "done" });
+    await expect(db.select({ status: issueThreadInteractions.status }).from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interaction!.id)))
+      .resolves.toEqual([{ status: "expired" }]);
+  });
+
+  it("lets an agent close after withdrawing its human-only interaction", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, { id: agentId, name: "ClosingAgent" }));
+    const issue = await svc.create(companyId, {
+      title: "Withdraw then close", status: "todo", priority: "medium", assigneeAgentId: agentId,
+    });
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId: issue.id, kind: "request_confirmation", status: "pending",
+      requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only", createdByAgentId: agentId,
+      payload: { version: 1, prompt: "Approve?" },
+    }).returning();
+
+    await issueThreadInteractionService(db).withdrawInteraction(
+      { id: issue.id, companyId }, interaction!.id, {}, { agentId },
+    );
+    await expect(svc.update(issue.id, { status: "done", actorAgentId: agentId }))
+      .resolves.toMatchObject({ status: "done" });
+    await expect(db.select({ status: issueThreadInteractions.status }).from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interaction!.id)))
+      .resolves.toEqual([{ status: "cancelled" }]);
   });
 
   it("expires superseded interactions when human comments are added through the service", async () => {
