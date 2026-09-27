@@ -2341,6 +2341,21 @@ function shouldHumanCommentResumeInProgressScheduledRetry(input: {
   );
 }
 
+function isFutureProviderQuotaRetry(
+  retry: {
+    status: string;
+    errorFamily?: string | null;
+    scheduledRetryAt: Date | null;
+  } | null,
+) {
+  return (
+    retry?.status === "scheduled_retry" &&
+    retry.errorFamily === "provider_quota" &&
+    retry.scheduledRetryAt != null &&
+    retry.scheduledRetryAt.getTime() > Date.now()
+  );
+}
+
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
   return (
     status === "done" ||
@@ -12939,7 +12954,9 @@ export function issueRoutes(
           : null;
       const shouldResumeInProgressScheduledRetry =
         !!scheduledRetryForHumanComment &&
-        scheduledRetryForHumanComment.agentId === requestedAssigneeAgentId;
+        scheduledRetryForHumanComment.agentId === requestedAssigneeAgentId &&
+        (resumeRequested === true ||
+          !isFutureProviderQuotaRetry(scheduledRetryForHumanComment));
       const assigneeSelfCommentOnTerminal =
         isAssigneeSelfCommentOnTerminalIssue({
           hasCommentBody: !!commentBody,
@@ -13083,7 +13100,8 @@ export function issueRoutes(
       if (
         commentBody &&
         shouldResumeInProgressScheduledRetry &&
-        updateFields.status === "todo"
+        updateFields.status === "todo" &&
+        !isFutureProviderQuotaRetry(scheduledRetryForHumanComment)
       ) {
         cancelledScheduledRetryRunId =
           await cancelScheduledRetrySupersededByComment({
@@ -14455,6 +14473,11 @@ export function issueRoutes(
             typeof wakeup.payload.issueId === "string"
               ? wakeup.payload.issueId
               : issue.id;
+          if (wakeIssueId === issue.id && resumeRequested === true &&
+              actor.actorType === "user" &&
+              isFutureProviderQuotaRetry(scheduledRetryForHumanComment)) {
+            wakeup.manualUserWake = true;
+          }
           wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
         };
         const addDependencyResolvedWakeup = async (input: {
@@ -17318,7 +17341,9 @@ export function issueRoutes(
           : null;
       const shouldResumeInProgressScheduledRetry =
         !!scheduledRetryForHumanComment &&
-        scheduledRetryForHumanComment.agentId === issue.assigneeAgentId;
+        scheduledRetryForHumanComment.agentId === issue.assigneeAgentId &&
+        (resumeRequested === true ||
+          !isFutureProviderQuotaRetry(scheduledRetryForHumanComment));
       const assigneeSelfCommentOnTerminal =
         isAssigneeSelfCommentOnTerminalIssue({
           hasCommentBody: true,
@@ -17426,7 +17451,8 @@ export function issueRoutes(
         scheduledRetrySupersededByComment =
           shouldResumeInProgressScheduledRetry &&
           issue.status === "in_progress";
-        cancelledScheduledRetryRunId = scheduledRetrySupersededByComment
+        cancelledScheduledRetryRunId = scheduledRetrySupersededByComment &&
+          !isFutureProviderQuotaRetry(scheduledRetryForHumanComment)
           ? await cancelScheduledRetrySupersededByComment({
               scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
               issue,
@@ -17903,6 +17929,11 @@ export function issueRoutes(
               : currentIssue.id;
           const key = `${agentId}:${wakeIssueId}`;
           if (wakeups.has(key)) return;
+          if (wakeIssueId === currentIssue.id && resumeRequested === true &&
+              actor.actorType === "user" &&
+              isFutureProviderQuotaRetry(scheduledRetryForHumanComment)) {
+            wakeup.manualUserWake = true;
+          }
           wakeups.set(key, { agentId, wakeup });
         };
         const addDependencyResolvedWakeup = async (input: {
