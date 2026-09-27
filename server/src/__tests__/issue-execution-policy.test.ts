@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -95,6 +95,29 @@ describe("normalizeIssueExecutionPolicy", () => {
     expect(result!.mode).toBe("normal");
   });
 
+  it("preserves an explicit final approval mode", () => {
+    const result = normalizeIssueExecutionPolicy({
+      finalApproval: "board",
+      stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+    });
+    expect(result?.finalApproval).toBe("board");
+  });
+
+  it("preserves board approval when clearing a monitor", () => {
+    const policy = normalizeIssueExecutionPolicy({
+      finalApproval: "board",
+      maxReviewRounds: 2,
+      monitor: { nextCheckAt: "2026-10-01T12:00:00.000Z" },
+      stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+    });
+    expect(stripMonitorFromExecutionPolicy(policy)).toMatchObject({
+      finalApproval: "board",
+      maxReviewRounds: 2,
+      stages: policy?.stages,
+    });
+    expect(stripMonitorFromExecutionPolicy(policy)).not.toHaveProperty("monitor");
+  });
+
   it("rejects approvalsNeeded values above 1", () => {
     expect(() =>
       normalizeIssueExecutionPolicy({
@@ -131,6 +154,119 @@ describe("normalizeIssueExecutionPolicy", () => {
         externalRef: "[redacted]",
       },
     });
+  });
+});
+
+describe("board final approval hand-off", () => {
+  const policy = reviewOnlyPolicy();
+  const stageId = policy.stages[0].id;
+  const pendingIssue = {
+    status: "in_review",
+    assigneeAgentId: qaAgentId,
+    assigneeUserId: null,
+    responsibleUserId: boardUserId,
+    executionPolicy: policy,
+    executionState: {
+      status: "pending",
+      currentStageId: stageId,
+      currentStageIndex: 0,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: qaAgentId },
+      returnAssignee: { type: "agent", agentId: coderAgentId },
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    },
+  };
+
+  it("hands a final agent approval to the responsible user while recording approval", () => {
+    const result = applyIssueExecutionPolicyTransition({
+      issue: pendingIssue,
+      policy,
+      finalApproval: "board",
+      requestedStatus: "done",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Approved",
+    });
+    expect(result.patch).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: boardUserId,
+      executionState: { status: "completed", lastDecisionOutcome: "approved" },
+    });
+    expect(result.decision).toMatchObject({ outcome: "approved" });
+    expect(result.workflowControlledAssignment).toBe(true);
+  });
+
+  it.each(["pending", "changes_requested"] as const)("rejects a done request that replaces a %s review stage", (status) => {
+    const replacementPolicy = reviewOnlyPolicy();
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue: {
+        ...pendingIssue,
+        status: status === "pending" ? "in_review" : "in_progress",
+        executionState: { ...pendingIssue.executionState, status },
+      },
+      policy: replacementPolicy,
+      finalApproval: "board",
+      requestedStatus: "done",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Approved",
+    })).toThrow("Board approval workflow is pending");
+  });
+
+  it("keeps an agent's later done request with the Board after completion", () => {
+    const completed = applyIssueExecutionPolicyTransition({
+      issue: pendingIssue, policy, requestedStatus: "done",
+      requestedAssigneePatch: {}, actor: { agentId: qaAgentId }, commentBody: "Approved",
+    });
+    const result = applyIssueExecutionPolicyTransition({
+      issue: { ...pendingIssue, executionState: completed.patch.executionState as IssueExecutionState },
+      policy, finalApproval: "board", requestedStatus: "done",
+      requestedAssigneePatch: {}, actor: { agentId: qaAgentId },
+    });
+    expect(result.patch).toMatchObject({ status: "in_review", assigneeUserId: boardUserId });
+  });
+
+  it("hands off when every remaining stage is self-review and auto-skipped", () => {
+    const selfReviewPolicy = makePolicy([{ type: "review", participants: [{ type: "agent", agentId: coderAgentId }] }]);
+    const result = applyIssueExecutionPolicyTransition({
+      issue: { status: "in_progress", assigneeAgentId: coderAgentId, responsibleUserId: boardUserId },
+      policy: selfReviewPolicy, finalApproval: "board", requestedStatus: "done",
+      requestedAssigneePatch: {}, actor: { agentId: coderAgentId },
+    });
+    expect(result.patch).toMatchObject({
+      status: "in_review", assigneeAgentId: null, assigneeUserId: boardUserId,
+      executionState: { status: "completed" },
+    });
+  });
+
+  it("allows a user final-stage participant to close directly", () => {
+    const userPolicy = approvalOnlyPolicy();
+    const result = applyIssueExecutionPolicyTransition({
+      issue: {
+        status: "in_review", assigneeUserId: ctoUserId, responsibleUserId: boardUserId,
+        executionState: {
+          ...pendingIssue.executionState,
+          currentStageId: userPolicy.stages[0].id,
+          currentStageType: "approval",
+          currentParticipant: { type: "user", userId: ctoUserId },
+        },
+      },
+      policy: userPolicy, finalApproval: "board", requestedStatus: "done",
+      requestedAssigneePatch: {}, actor: { userId: ctoUserId }, commentBody: "Approved",
+    });
+    expect(result.patch.status).toBeUndefined();
+    expect(result.patch.executionState).toMatchObject({ status: "completed" });
+  });
+
+  it("rejects a board hand-off without any responsible user", () => {
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue: { ...pendingIssue, responsibleUserId: null },
+      policy, finalApproval: "board", requestedStatus: "done",
+      requestedAssigneePatch: {}, actor: { agentId: qaAgentId }, commentBody: "Approved",
+    })).toThrow("A responsible Board user is required");
   });
 });
 

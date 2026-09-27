@@ -15,6 +15,7 @@ export const companies = pgTable(
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
     defaultResponsibleUserId: text("default_responsible_user_id"),
+    defaultFinalApproval: text("default_final_approval").notNull().default("close"),
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()
       .default(false),

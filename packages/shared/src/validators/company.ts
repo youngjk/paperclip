@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   COMPANY_STATUSES,
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES,
+  ISSUE_EXECUTION_FINAL_APPROVAL_MODES,
 } from "../constants.js";
 import { objectWithoutDefaults } from "./partial.js";
 
@@ -37,6 +38,7 @@ export const updateCompanySchema = objectWithoutDefaults(
       status: z.enum(COMPANY_STATUSES).optional(),
       spentMonthlyCents: z.number().int().nonnegative().optional(),
       requireBoardApprovalForNewAgents: z.boolean().optional(),
+      defaultFinalApproval: z.enum(ISSUE_EXECUTION_FINAL_APPROVAL_MODES).optional(),
       interactionResolverGovernance: interactionResolverGovernanceSchema.optional(),
       feedbackDataSharingEnabled: z.boolean().optional(),
       feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),

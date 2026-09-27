@@ -1561,6 +1561,26 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("rejects a close-mode child in a board-default company's accepted plan", async () => {
+    mockCompanyService.getById.mockResolvedValue({
+      id: companyId, issuePrefix: "PAP", defaultFinalApproval: "board",
+    });
+    const res = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/accepted-plan-decompositions`)
+      .send({
+        acceptedPlanRevisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        children: [{
+          title: "Review change",
+          executionPolicy: {
+            finalApproval: "close",
+            stages: [{ type: "review", participants: [{ type: "agent", agentId: ownerAgentId }] }],
+          },
+        }],
+      });
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockIssueService.decomposeAcceptedPlan).not.toHaveBeenCalled();
+  });
+
   it("rejects retired issue assignee profile overrides", async () => {
     const app = await createApp(boardActor());
 

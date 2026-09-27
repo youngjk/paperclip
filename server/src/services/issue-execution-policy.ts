@@ -5,6 +5,7 @@ import type {
   IssueExecutionMonitorPolicy,
   IssueExecutionMonitorState,
   IssueExecutionPolicy,
+  IssueExecutionFinalApprovalMode,
   IssueExecutionStage,
   IssueExecutionStagePrincipal,
   IssueExecutionState,
@@ -45,6 +46,8 @@ type RequestedAssigneePatch = {
 type TransitionInput = {
   issue: IssueLike;
   policy: IssueExecutionPolicy | null;
+  finalApproval?: IssueExecutionFinalApprovalMode;
+  companyDefaultResponsibleUserId?: string | null;
   previousPolicy?: IssueExecutionPolicy | null;
   requestedStatus?: string;
   requestedAssigneePatch: RequestedAssigneePatch;
@@ -326,11 +329,8 @@ export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | n
   if (!policy) return null;
   if (!policy.monitor) return policy;
   if (policy.stages.length === 0) return null;
-  return {
-    mode: policy.mode,
-    commentRequired: policy.commentRequired,
-    stages: policy.stages,
-  };
+  const { monitor: _monitor, ...withoutMonitor } = policy;
+  return withoutMonitor;
 }
 
 export function setIssueExecutionPolicyMonitorScheduledBy(
@@ -405,6 +405,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 
   return {
     mode: parsed.data.mode ?? "normal",
+    ...(parsed.data.finalApproval ? { finalApproval: parsed.data.finalApproval } : {}),
     commentRequired: true,
     stages,
     ...(monitor ? { monitor } : {}),
@@ -1216,6 +1217,41 @@ export function buildIssueMonitorClearedPatch(input: {
 
 export function applyIssueExecutionPolicyTransition(input: TransitionInput): TransitionResult {
   const stageResult = applyIssueExecutionStageTransition(input);
+  const existingState = parseIssueExecutionState(input.issue.executionState);
+  const nextState = stageResult.patch.executionState === undefined
+    ? existingState
+    : parseIssueExecutionState(stageResult.patch.executionState);
+  if (
+    input.requestedStatus === "done"
+    && input.policy?.stages.length
+    && input.finalApproval === "board"
+    && !input.actor.userId
+    && existingState
+    && existingState.status !== COMPLETED_STATUS
+    && !nextState
+  ) {
+    throw unprocessable("Cannot close an issue while its Board approval workflow is pending");
+  }
+  if (
+    input.requestedStatus === "done"
+    && input.policy?.stages.length
+    && input.finalApproval === "board"
+    && !input.actor.userId
+    && nextState?.status === COMPLETED_STATUS
+  ) {
+    const responsibleUserId = input.issue.responsibleUserId
+      ?? input.companyDefaultResponsibleUserId
+      ?? input.issue.createdByUserId;
+    if (!responsibleUserId) {
+      throw unprocessable("A responsible Board user is required for final approval hand-off");
+    }
+    Object.assign(stageResult.patch, {
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: responsibleUserId,
+    });
+    stageResult.workflowControlledAssignment = true;
+  }
   const monitorPatch = applyMonitorTransition(input, stageResult.patch);
   Object.assign(stageResult.patch, monitorPatch);
   return stageResult;

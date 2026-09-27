@@ -518,6 +518,9 @@ export type ExternalObjectMentionConfidence = (typeof EXTERNAL_OBJECT_MENTION_CO
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
 export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];
 
+export const ISSUE_EXECUTION_FINAL_APPROVAL_MODES = ["close", "board"] as const;
+export type IssueExecutionFinalApprovalMode = (typeof ISSUE_EXECUTION_FINAL_APPROVAL_MODES)[number];
+
 export const ISSUE_EXECUTION_STAGE_TYPES = ["review", "approval"] as const;
 export type IssueExecutionStageType = (typeof ISSUE_EXECUTION_STAGE_TYPES)[number];
 

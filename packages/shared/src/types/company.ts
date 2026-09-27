@@ -3,6 +3,7 @@ import type {
   IssueThreadInteractionKind,
   IssueThreadInteractionResolverPolicy,
   PauseReason,
+  IssueExecutionFinalApprovalMode,
 } from "../constants.js";
 
 export interface InteractionResolverKindGovernance {
@@ -26,6 +27,7 @@ export interface Company {
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   defaultResponsibleUserId: string | null;
+  defaultFinalApproval: IssueExecutionFinalApprovalMode;
   requireBoardApprovalForNewAgents: boolean;
   interactionResolverGovernance: InteractionResolverGovernance;
   feedbackDataSharingEnabled: boolean;

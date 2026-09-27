@@ -9463,9 +9463,12 @@ export function issueRoutes(
             const executionPolicy = normalizeIssueExecutionPolicy(
               lockedIssue.executionPolicy ?? null,
             );
+            const company = await companiesSvc.getById(lockedIssue.companyId);
             const transition = applyIssueExecutionPolicyTransition({
               issue: lockedIssue,
               policy: executionPolicy,
+              finalApproval: executionPolicy?.finalApproval ?? (company?.defaultFinalApproval === "board" ? "board" : "close"),
+              companyDefaultResponsibleUserId: company?.defaultResponsibleUserId,
               previousPolicy: executionPolicy,
               requestedStatus: sourceIssueStatus,
               requestedAssigneePatch: {},
@@ -11849,6 +11852,13 @@ export function issueRoutes(
         normalizeIssueExecutionPolicy(createBody.executionPolicy),
         actor.actorType,
       );
+      if (
+        actor.actorType !== "user"
+        && executionPolicy?.finalApproval === "close"
+        && (await companiesSvc.getById(companyId))?.defaultFinalApproval === "board"
+      ) {
+        throw forbidden("Only a Board user can downgrade a board-default execution policy");
+      }
       await assertCanManageIssueMonitor(
         access,
         req,
@@ -12196,6 +12206,13 @@ export function issueRoutes(
         normalizeIssueExecutionPolicy(createBody.executionPolicy),
         actor.actorType,
       );
+      if (
+        actor.actorType !== "user"
+        && executionPolicy?.finalApproval === "close"
+        && (await companiesSvc.getById(parent.companyId))?.defaultFinalApproval === "board"
+      ) {
+        throw forbidden("Only a Board user can downgrade a board-default execution policy");
+      }
       await assertCanManageIssueMonitor(
         access,
         req,
@@ -12414,12 +12431,20 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
+      const company = await companiesSvc.getById(sourceIssue.companyId);
       const normalizedChildren = [];
       for (const child of requestedChildren) {
         const executionPolicy = applyActorMonitorScheduledBy(
           normalizeIssueExecutionPolicy(child.executionPolicy),
           actor.actorType,
         );
+        if (
+          actor.actorType !== "user"
+          && company?.defaultFinalApproval === "board"
+          && executionPolicy?.finalApproval === "close"
+        ) {
+          throw forbidden("Only a Board user can downgrade a board-default execution policy");
+        }
         await assertCanManageIssueMonitor(
           access,
           req,
@@ -13193,6 +13218,18 @@ export function issueRoutes(
         updateFields.executionPolicy !== undefined
           ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
           : previousExecutionPolicy;
+      const company = await companiesSvc.getById(existing.companyId);
+      if (
+        company?.defaultFinalApproval === "board"
+        && actor.actorType !== "user"
+        && req.body.executionPolicy !== undefined
+        && (
+          req.body.executionPolicy?.finalApproval === "close"
+          || (previousExecutionPolicy?.stages.length && !nextExecutionPolicy?.stages.length)
+        )
+      ) {
+        throw forbidden("Only a Board user can downgrade a board-default execution policy");
+      }
       if (normalizedAssigneeAgentId !== undefined) {
         updateFields.assigneeAgentId = normalizedAssigneeAgentId;
       }
@@ -13210,6 +13247,8 @@ export function issueRoutes(
       const transition = applyIssueExecutionPolicyTransition({
         issue: existing,
         policy: nextExecutionPolicy,
+        finalApproval: nextExecutionPolicy?.finalApproval ?? (company?.defaultFinalApproval === "board" ? "board" : "close"),
+        companyDefaultResponsibleUserId: company?.defaultResponsibleUserId,
         previousPolicy: previousExecutionPolicy,
         requestedStatus:
           typeof updateFields.status === "string"
@@ -17662,9 +17701,12 @@ export function issueRoutes(
       let comment: Awaited<ReturnType<typeof svc.addComment>>;
       let goalCommentSteered = false;
       if (shouldAutoApproveReviewComment) {
+        const company = await companiesSvc.getById(currentIssue.companyId);
         const transition = applyIssueExecutionPolicyTransition({
           issue: currentIssue,
           policy: currentExecutionPolicy,
+          finalApproval: currentExecutionPolicy?.finalApproval ?? (company?.defaultFinalApproval === "board" ? "board" : "close"),
+          companyDefaultResponsibleUserId: company?.defaultResponsibleUserId,
           requestedStatus: "done",
           requestedAssigneePatch: {},
           actor: {

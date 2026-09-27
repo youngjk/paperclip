@@ -12,6 +12,7 @@ import type {
   IssueExecutionDecisionOutcome,
   IssueMonitorScheduledBy,
   IssueExecutionPolicyMode,
+  IssueExecutionFinalApprovalMode,
   IssueReferenceSourceKind,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
@@ -666,6 +667,7 @@ export interface IssueExecutionMonitorPolicy {
 
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
+  finalApproval?: IssueExecutionFinalApprovalMode;
   commentRequired: boolean;
   stages: IssueExecutionStage[];
   monitor?: IssueExecutionMonitorPolicy | null;
