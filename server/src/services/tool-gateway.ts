@@ -1,5 +1,5 @@
 import { COGNEE_STDIO_TEMPLATE, cogneeCloudUrl, callCogneeCloud } from "./cognee-connection.js";
-import { HttpError } from "../errors.js";
+import { conflict, HttpError } from "../errors.js";
 import { claimSlackRateLimitRetry } from "./connectors/slack-retry.js";
 import { resolveSlackTaskAuthority } from "./connectors/slack-authority.js";
 import { SLACK_TOOLS } from "@paperclipai/shared";
@@ -4299,21 +4299,24 @@ export function createToolGatewayService(
         href,
       },
     };
-    const [existing] = await db
-      .select({ id: issueThreadInteractions.id })
-      .from(issueThreadInteractions)
-      .where(
-        and(
+    await db.transaction(async (tx) => {
+      const [issue] = await tx.select({ status: issues.status }).from(issues)
+        .where(and(eq(issues.id, session.issueId!), eq(issues.companyId, session.companyId)))
+        .for("update");
+      if (!issue || issue.status === "done" || issue.status === "cancelled") {
+        throw conflict("Cannot request authorization on a closed issue", { code: "issue_closed" });
+      }
+      const [existing] = await tx
+        .select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions)
+        .where(and(
           eq(issueThreadInteractions.companyId, session.companyId),
-          eq(issueThreadInteractions.issueId, session.issueId),
+          eq(issueThreadInteractions.issueId, session.issueId!),
           eq(issueThreadInteractions.idempotencyKey, idempotencyKey),
-        ),
-      )
-      .limit(1);
-    if (existing) {
-      await db
-        .update(issueThreadInteractions)
-        .set({
+        ))
+        .limit(1);
+      if (existing) {
+        await tx.update(issueThreadInteractions).set({
           status: "pending",
           continuationPolicy: "wake_assignee",
           requestedResolverPolicy: "human_only",
@@ -4325,33 +4328,29 @@ export function createToolGatewayService(
           result: null,
           resolvedAt: null,
           updatedAt: new Date(),
-        })
-        .where(eq(issueThreadInteractions.id, existing.id));
-      return;
-    }
-    await db.insert(issueThreadInteractions).values({
-      companyId: session.companyId,
-      issueId: session.issueId,
-      kind: "request_confirmation",
-      status: "pending",
-      continuationPolicy: "wake_assignee",
-      requestedResolverPolicy: "human_only",
-      effectiveResolverPolicy: "human_only",
-      resolverPolicyProvenance: "explicit",
-      effectiveResolverPolicySource: "requested",
-      idempotencyKey,
-      sourceRunId: session.runId,
-      title:
-        grantKind === "organization"
-          ? `Reconnect ${connection.name}`
-          : `Connect your ${connection.name}`,
-      summary:
-        grantKind === "organization"
+        }).where(eq(issueThreadInteractions.id, existing.id));
+        return;
+      }
+      await tx.insert(issueThreadInteractions).values({
+        companyId: session.companyId,
+        issueId: session.issueId!,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        requestedResolverPolicy: "human_only",
+        effectiveResolverPolicy: "human_only",
+        resolverPolicyProvenance: "explicit",
+        effectiveResolverPolicySource: "requested",
+        idempotencyKey,
+        sourceRunId: session.runId,
+        title: grantKind === "organization" ? `Reconnect ${connection.name}` : `Connect your ${connection.name}`,
+        summary: grantKind === "organization"
           ? "Organization authorization is required before this run can continue."
           : "Personal authorization is required before this run can continue.",
-      createdByAgentId: session.agentId,
-      addresseeUserId: userId,
-      payload,
+        createdByAgentId: session.agentId,
+        addresseeUserId: userId,
+        payload,
+      });
     });
   }
 

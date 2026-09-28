@@ -270,6 +270,7 @@ import { decisionTrainingService } from "../services/decision-training.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
+  assertNoPendingHumanInteractionsForClose,
   ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
   ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
@@ -13457,6 +13458,13 @@ export function issueRoutes(
           });
         }
       }
+
+      // Reject a pending human decision before reassignment or terminalization
+      // stops the active run. issueService.update repeats this under the row lock.
+      await assertNoPendingHumanInteractionsForClose(
+        db, existing, updateFields.status,
+        actor.actorType === "user" ? actor.actorId : null,
+      );
 
       // Only this request may finish a mutation that intentionally stops its
       // own run (for example handing work to a signoff reviewer).

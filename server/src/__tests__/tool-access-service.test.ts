@@ -9328,6 +9328,24 @@ describeEmbeddedPostgres("tool access service", () => {
           )
       ).length,
     ).toBe(versionCountBeforeAccessRevocation);
+    await db.update(companyMemberships).set({ status: "active" }).where(and(
+      eq(companyMemberships.companyId, company.id),
+      eq(companyMemberships.principalId, "user-for-run"),
+    ));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issue.id));
+    await db.update(issueThreadInteractions).set({ status: "expired", result: { outcome: "issue_closed" } })
+      .where(eq(issueThreadInteractions.id, interaction.id));
+    await expect(service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run.id,
+      subjectUserId: "user-for-run",
+      scopes: ["channels:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    })).rejects.toMatchObject({ status: 409, details: { code: "issue_closed" } });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0])
+      .toMatchObject({ status: "expired", result: { outcome: "issue_closed" } });
   });
 
   it.each(["page", "task"] as const)(

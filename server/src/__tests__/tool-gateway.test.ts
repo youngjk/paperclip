@@ -2430,6 +2430,16 @@ rl.on("line", (line) => {
       await expect(db.select({ healthStatus: toolConnections.healthStatus }).from(toolConnections).where(
         eq(toolConnections.id, connection.id),
       )).resolves.toEqual([{ healthStatus: "ok" }]);
+
+      await db.update(connectionGrants).set({ status: "revoked" })
+        .where(eq(connectionGrants.connectionId, connection.id));
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, issue.id));
+      await db.update(issueThreadInteractions).set({ status: "expired", result: { outcome: "issue_closed" } })
+        .where(eq(issueThreadInteractions.id, interaction!.id));
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+        .rejects.toMatchObject({ status: 409, details: { code: "issue_closed" } });
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction!.id)))[0])
+        .toMatchObject({ status: "expired", result: { outcome: "issue_closed" } });
     } finally {
       await fake.close();
     }

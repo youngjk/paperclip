@@ -212,6 +212,29 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       .toBe("in_progress");
   });
 
+  it.each([
+    ["reassigns the issue", { status: "done", assigneeAgentId: null, assigneeUserId: "queue-owner" }],
+    ["keeps the assignee", { status: "done" }],
+  ])("does not stop the active run when a rejected close %s", async (_case, update) => {
+    const seeded = await seedQueue();
+    await db.update(issues).set({ createdByUserId: "queue-owner" }).where(eq(issues.id, seeded.issueId));
+    const client = app(seeded.companyId, "queue-owner", { agentId: seeded.agentId, runId: seeded.runId });
+    const created = await request(client)
+      .post(`/api/issues/${seeded.issueId}/interactions`)
+      .send({ kind: "request_confirmation", resolverPolicy: "board_only", title: "Board decision", payload: { version: 1, prompt: "Approve close?" } });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+
+    const closed = await request(client).patch(`/api/issues/${seeded.issueId}`).send(update);
+    expect(closed.status, JSON.stringify(closed.body)).toBe(409);
+    expect(closed.body.code).toBe("pending_human_interactions");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]?.status).toBe("running");
+    expect((await db.select().from(issues).where(eq(issues.id, seeded.issueId)))[0]).toMatchObject({
+      status: "in_progress", assigneeAgentId: seeded.agentId, executionRunId: seeded.runId,
+    });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, created.body.id)))[0]?.status)
+      .toBe("pending");
+  });
+
   it.each(["cancelled", "running"])("rejects a late Done from an interrupted %s task run at the write boundary", async status => {
     const seeded = await seedQueue();
     await db.update(heartbeatRuns).set({ status, resultJson: { executionCancellation: { state: "requested" } } })

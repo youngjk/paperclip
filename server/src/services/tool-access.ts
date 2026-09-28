@@ -14560,21 +14560,24 @@ export function toolAccessService(
           href: authorizationUrl.toString(),
         },
       };
-      const [existingInteraction] = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(
-          and(
+      await db.transaction(async (tx) => {
+        const [issue] = await tx.select({ status: issues.status }).from(issues)
+          .where(and(eq(issues.id, input.issueId!), eq(issues.companyId, companyId)))
+          .for("update");
+        if (!issue || issue.status === "done" || issue.status === "cancelled") {
+          throw conflict("Cannot request authorization on a closed issue", { code: "issue_closed" });
+        }
+        const [existingInteraction] = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(
             eq(issueThreadInteractions.companyId, companyId),
-            eq(issueThreadInteractions.issueId, input.issueId),
+            eq(issueThreadInteractions.issueId, input.issueId!),
             eq(issueThreadInteractions.idempotencyKey, idempotencyKey),
-          ),
-        )
-        .limit(1);
-      const [interaction] = existingInteraction
-        ? await db
-            .update(issueThreadInteractions)
-            .set({
+          ))
+          .limit(1);
+        const [interaction] = existingInteraction
+          ? await tx.update(issueThreadInteractions).set({
               status: "pending",
               requestedResolverPolicy: "human_only",
               effectiveResolverPolicy: "human_only",
@@ -14585,14 +14588,10 @@ export function toolAccessService(
               result: null,
               resolvedAt: null,
               updatedAt: new Date(),
-            })
-            .where(eq(issueThreadInteractions.id, existingInteraction.id))
-            .returning()
-        : await db
-            .insert(issueThreadInteractions)
-            .values({
+            }).where(eq(issueThreadInteractions.id, existingInteraction.id)).returning()
+          : await tx.insert(issueThreadInteractions).values({
               companyId,
-              issueId: input.issueId,
+              issueId: input.issueId!,
               kind: "request_confirmation",
               status: "pending",
               continuationPolicy: "none",
@@ -14602,23 +14601,17 @@ export function toolAccessService(
               effectiveResolverPolicySource: "requested",
               addresseeUserId: authorizationSubjectUserId,
               idempotencyKey,
-              sourceRunId:
-                binding.actorType === "agent"
-                  ? (input.actor.sessionId ?? null)
-                  : null,
+              sourceRunId: binding.actorType === "agent" ? (input.actor.sessionId ?? null) : null,
               title: `Connect your ${providerName} to continue`,
               summary: `${requestingAgent?.name ?? "An agent"} needs your ${providerName} identity for work running as you.`,
-              createdByAgentId:
-                binding.actorType === "agent" ? binding.actorId : null,
+              createdByAgentId: binding.actorType === "agent" ? binding.actorId : null,
               payload,
-            })
-            .returning();
-      if (interaction) {
-        await db
-          .update(toolOauthStates)
-          .set({ interactionId: interaction.id })
-          .where(eq(toolOauthStates.state, state));
-      }
+            }).returning();
+        if (interaction) {
+          await tx.update(toolOauthStates).set({ interactionId: interaction.id })
+            .where(eq(toolOauthStates.state, state));
+        }
+      });
     }
 
     const nextConfig = {
